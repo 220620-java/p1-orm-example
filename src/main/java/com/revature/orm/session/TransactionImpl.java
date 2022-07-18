@@ -9,9 +9,11 @@ import java.sql.SQLException;
 import java.sql.Savepoint;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Set;
 
 import com.revature.orm.ORMTransaction;
 import com.revature.orm.ParsedObject;
+import com.revature.orm.annotations.Relationship;
 import com.revature.orm.connection.ConnectionManager;
 import com.revature.orm.connection.RevConnectionManager;
 import com.revature.orm.connection.StatementWriter;
@@ -39,12 +41,11 @@ public class TransactionImpl<T> implements ORMTransaction<T> {
 		switch (keyword) {
 		case "INSERT":
 			stmt = writer.insert((T) obj, conn);
-			stmt = setInsertValues(obj);
+			stmt = setInsertValues(obj, stmt);
 			break;
 		case "UPDATE":
 			stmt = writer.update((T) obj, conn);
-			Object primaryKeyValue1 = getPkValue(obj);
-			stmt.setObject(1, primaryKeyValue1);
+			stmt = setUpdateValues(obj, stmt);
 			break;
 		case "DELETE":
 			stmt = writer.delete((T) obj, conn);
@@ -57,32 +58,89 @@ public class TransactionImpl<T> implements ORMTransaction<T> {
 		if (stmt != null) {
 			stmts.add(stmt);
 		}
-		
+
 		return new TransactionImpl<T>(conn, writer, stmts);
 	}
 
-	private PreparedStatement setInsertValues(Object obj) {
-		// TODO Auto-generated method stub
-		return null;
+	private PreparedStatement setUpdateValues(Object obj, PreparedStatement stmt) throws SQLException {
+		int parameterIndex = 1;
+		ParsedObject parsedObj = new ParsedObject(obj.getClass());
+		try {
+			for (String fieldName : parsedObj.getColumns().keySet()) {
+				if (!fieldName.equals(parsedObj.getPrimaryKeyField())) {
+					stmt = setValue(fieldName, obj, stmt, parameterIndex++, parsedObj);
+				}
+			}
+			stmt.setObject(parameterIndex++, getPkValue(obj));
+		} catch (Exception e) {
+			UnsupportedModelException e1 = new UnsupportedModelException(
+					"Your model has inaccessible fields (private and missing getter method).");
+			e1.initCause(e);
+			throw e1;
+		}
+
+		return stmt;
+	}
+
+	private PreparedStatement setInsertValues(Object obj, PreparedStatement stmt) throws SQLException {
+		int parameterIndex = 1;
+		ParsedObject parsedObj = new ParsedObject(obj.getClass());
+		try {
+			for (String fieldName : parsedObj.getColumns().keySet()) {
+				if (!fieldName.equals(parsedObj.getPrimaryKeyField())) {
+					stmt = setValue(fieldName, obj, stmt, parameterIndex++, parsedObj);
+				}
+			}
+		} catch (Exception e) {
+			UnsupportedModelException e1 = new UnsupportedModelException(
+					"Your model has inaccessible fields (private and missing getter method).");
+			e1.initCause(e);
+			throw e1;
+		}
+
+		return stmt;
+	}
+
+	private PreparedStatement setValue(String fieldName, Object obj, PreparedStatement stmt, int parameterIndex,
+			ParsedObject parsedObj) throws IllegalArgumentException, IllegalAccessException, NoSuchFieldException,
+			SecurityException, InvocationTargetException, NoSuchMethodException, SQLException {
+		Object value = null;
+		if (fieldExists(obj, fieldName) && obj.getClass().getDeclaredField(fieldName).isAccessible()) {
+			value = obj.getClass().getDeclaredField(fieldName).get(obj);
+		} else {
+			String methodName = "get" + fieldName.toUpperCase().charAt(0) + fieldName.substring(1);
+			value = obj.getClass().getDeclaredMethod(methodName).invoke(obj);
+		}
+
+		if (fieldExists(obj, fieldName)
+				&& obj.getClass().getDeclaredField(fieldName).isAnnotationPresent(Relationship.class)) {
+			value = getPkValue(value);
+		}
+
+		stmt.setObject(parameterIndex, value);
+		return stmt;
 	}
 
 	private Object getPkValue(Object obj) {
 		Object primaryKeyValue = null;
-		
+
 		try {
 			ParsedObject parsedObj = new ParsedObject(obj.getClass());
 			String pkFieldName = parsedObj.getPrimaryKeyField();
-			Field pkField = obj.getClass().getField(pkFieldName);
-			if (pkField.isAccessible()) {
-				primaryKeyValue = pkField.get(obj);
+			if (fieldExists(obj, pkFieldName) && obj.getClass().getDeclaredField(pkFieldName).isAccessible()) {
+				primaryKeyValue = obj.getClass().getDeclaredField(pkFieldName).get(obj);
 			} else {
 				String methodName = "get" + pkFieldName.toUpperCase().charAt(0) + pkFieldName.substring(1);
-				primaryKeyValue = obj.getClass().getMethod(methodName).invoke(obj);
+				primaryKeyValue = obj.getClass().getDeclaredMethod(methodName).invoke(obj);
 			}
-		} catch (NoSuchFieldException | SecurityException | IllegalAccessException | IllegalArgumentException | InvocationTargetException | NoSuchMethodException e) {
-			throw new UnsupportedModelException("Your model has inaccessible fields (private with no getter).");
+		} catch (NoSuchFieldException | SecurityException | IllegalAccessException | IllegalArgumentException
+				| InvocationTargetException | NoSuchMethodException e) {
+			UnsupportedModelException e1 = new UnsupportedModelException(
+					"Your model has inaccessible fields (private and missing getter method).");
+			e1.initCause(e);
+			throw e1;
 		}
-		
+
 		return primaryKeyValue;
 	}
 
@@ -124,14 +182,14 @@ public class TransactionImpl<T> implements ORMTransaction<T> {
 		conn.rollback();
 		stmts = new LinkedList<>();
 	}
-	
+
 	@Override
 	public void rollbackToSavepoint(String name) throws SQLException {
 		int index = stmts.indexOf(name);
-		for (int i=index;i<stmts.size();i++) {
+		for (int i = index; i < stmts.size(); i++) {
 			stmts.remove(i);
 		}
-		
+
 		for (Savepoint svpt : savepoints) {
 			if (svpt.getSavepointName().equals(name)) {
 				conn.rollback(svpt);
@@ -150,12 +208,21 @@ public class TransactionImpl<T> implements ORMTransaction<T> {
 	private void closeConn() {
 		ConnectionManager mgr = RevConnectionManager.getConnectionManager();
 		mgr.releaseConnection(conn);
-		conn=null;
+		conn = null;
 	}
 
 	@Override
 	public void close() throws SQLException {
 		closeConn();
+	}
+
+	private boolean fieldExists(Object object, String fieldName) {
+		try {
+			object.getClass().getDeclaredField(fieldName);
+			return true;
+		} catch (NoSuchFieldException e) {
+			return false;
+		}
 	}
 
 }

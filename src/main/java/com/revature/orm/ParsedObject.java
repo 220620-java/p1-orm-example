@@ -23,6 +23,10 @@ public class ParsedObject {
 	 *  key: field name, value: column name
 	 */
 	private Map<String, String> columns;
+	/**
+	 *  key: field name, value: column name
+	 */
+	private Map<String, String> nonRelationshipColumns;
 	private Map<ParsedObject, RelationshipInfo> relationships;
 	
 	public <T> ParsedObject(Class<T> type) {
@@ -91,6 +95,8 @@ public class ParsedObject {
 		
 		Field[] fields = type.getDeclaredFields();
 		this.columns = new HashMap<>();
+		this.nonRelationshipColumns = new HashMap<>();
+		
 		for (Field field : fields) {
 			if (field.getAnnotation(Transient.class) == null) {
 				StringBuilder fieldString = new StringBuilder(field.toString());
@@ -109,7 +115,7 @@ public class ParsedObject {
 					} else {
 						String joinTable = field.getAnnotation(Relationship.class).joinTable();
 						// if there is no join table
-						if ("".equals(joinTable) && joinTable == null) {
+						if ("".equals(joinTable) || joinTable == null) {
 							String joinColumn = field.getAnnotation(Relationship.class).ownerJoinColumn();
 							// if the join column is not empty
 							if (!"".equals(joinColumn)) {
@@ -120,10 +126,25 @@ public class ParsedObject {
 				} else if (!"this$0".equals(fieldString.toString())) {
 					// if it's not a multi-word/camelcase field and it's not the this$0 field,
 					// add it to the strings directly
-					finalFieldName = fieldString.toString();
+					if (field.getAnnotation(Relationship.class) == null) {
+						finalFieldName = fieldString.toString();
+					} else {
+						String joinTable = field.getAnnotation(Relationship.class).joinTable();
+						// if there is no join table
+						if ("".equals(joinTable) || joinTable == null) {
+							String joinColumn = field.getAnnotation(Relationship.class).ownerJoinColumn();
+							// if the join column is not empty
+							if (!"".equals(joinColumn)) {
+								finalFieldName = joinColumn;
+							}
+						}
+					}
 				}
 				if (finalFieldName != null) {
 					columns.put(fieldString.toString(), finalFieldName.toString());
+					if (field.getAnnotation(Relationship.class) == null) {
+						nonRelationshipColumns.put(fieldString.toString(), finalFieldName.toString());
+					}
 				}
 
 				// save the primary key field
@@ -168,6 +189,10 @@ public class ParsedObject {
 		return columns;
 	}
 
+	public Map<String, String> getNonRelationshipColumns() {
+		return nonRelationshipColumns;
+	}
+	
 	public Map<ParsedObject, RelationshipInfo> getRelationships() {
 		return relationships;
 	}
